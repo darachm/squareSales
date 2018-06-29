@@ -2,19 +2,6 @@ library(tidyverse)
 library(shiny)
 library(lubridate)
 
-ui <- fluidPage(
-    titlePanel("h"),
-    mainPanel(
-        fileInput(inputId="input_csv", 
-            label="Give me a square space export CSV",
-            multiple=T,
-            accept=c("csv","text/csv"),
-            placeholder="placeholder"
-            ),
-        textOutput("files_read",inline=F),
-        textOutput("files_cols",inline=F)
-        )
-    )
 
 dollars_to_numbers <- function(x) as.numeric(sub("\\$","",x))
 
@@ -34,45 +21,58 @@ parse_square_csv <- function(path) {
             DateTime=with_tz(DateTime,
                 tzone="America/Los_Angeles")
             ) %>%
-        select(.,-DateString,-Date,-Time,-SKU,-Details) %>%
-        mutate(.,DayOfWeek=   wday(DateTime))%>%
+        select(.,-DateString,-Date,-Time,-SKU,-Details,
+            -`Net Sales`
+            ) %>%
+        mutate(.,DayOfWeek=   wday(DateTime,label=T))%>%
         mutate(.,DayOfYear=   yday(DateTime))%>%
         mutate(.,Week=        week(DateTime)) %>% 
         filter(.,-Discounts == `Gross Sales`) %>%
+        mutate(.,`Price Point Name`=ifelse(is.na(`Price Point Name`),
+            "",`Price Point Name`)) %>%
         arrange(.,DateTime)
 }
-z <- parse_square_csv("../copy.csv")
 
 # Internal check for any discounts greater than the sales, there's 
 # none on the test dataset
 # z%>% filter(Discounts != -`Gross Sales`, -Discounts > `Gross Sales`) %>% thead
 
-z %>% group_by(.,DayOfWeek) %>% 
-    summarize(.,Transactions=list(table(Item)))
+ui <- fluidPage(
+    titlePanel("h"),
+    mainPanel(
+        fileInput(inputId="input_csv", 
+            label="Give me a square space export CSV",
+            multiple=T,
+            accept=c("csv","text/csv"),
+            placeholder="placeholder"
+            ),
+        textOutput("files_read",inline=F),
+        textOutput("files_cols",inline=F),
+        radioButtons(inputId="items_or_sales",
+            label="Items or sales?",
+            choices=list(`Item counts`="Item",`Net Sales`="Net Sales")
+            ),
+        checkboxGroupInput(inputId="group_by",
+            label="Group by?",
+            choices=list("Item","Price Point Name")
+            ),
+        tableOutput(outputId="summary_table"),
+        plotOutput( outputId="summary_plot")
+        )
+    )
 
-ggplot(.) +
-    aes(x=DayOfWeek,y=`Gross Sales`) + 
-    geom_point() +
-    NULL
+#    How much of each protein option we sell each day
+#    How much of each item we sell each day 
 
-z %>% 
-    ggplot(.) +
-    aes(x=DayOfWeek,fill=Item) + 
-    geom_bar() +
-    NULL
-
-# to sort the table by descending size of items
-#    {tst <- sort(table(.$Item),decreasing=T); 
-#        .$Order <- sapply(.$Item,function(x) which(names(tst)==x)); 
-#        return(arrange(.,Order))} %>% 
+z <- parse_square_csv("../copy.csv")
 
 server <- function(input, output) {
-    dataframe_list <- reactive({
+    datar <- reactive({
         datapath <- input$input_csv$datapath
         if (is.null(datapath)) {
             return(NULL)
         }
-        return(bind_rows(lapply(datapath,read_csv)))
+        return(bind_rows(lapply(datapath,parse_square_csv)))
         })
     output$files_read <- reactive({
         name_vector <- input$input_csv$name
@@ -83,17 +83,58 @@ server <- function(input, output) {
         return(str_c("I'm reading in these files : ",name_list))
         })
     output$files_cols <- reactive({
-        datar <- dataframe_list()
+        datar <- datar()
         if (is.null(datar)) {
             return("")
         }
-        name_list <- str_c(names(dataframe_list()),collapse=", ")
+        name_list <- str_c(names(datar),collapse=", ")
         return(str_c("I stuck them all together, and they have ",
             "these columns : ",
             name_list))
         })
-    output$report <- reactive({
+    output$debug <- renderText(is(input$items_or_sales))
+    output$debug <- renderText(is(input$group_by))
+
+    output$summary_table <- reactive({
+        datar <- datar()
+        datar <- z
+        return(datar)
+        if (is.null(datar)) {
+            return("")
+        }
+        datar() %>% group_by_at(.,.vars=input$group_by) %>%
+            summarize(.,SummaryStat=!!!quos(input$items_or_sales)) #%>%
+#            summarize(.,SummaryStat=length(Item)) %>%
+#            select(.,Item,SummaryStat)
+#            select_at(.,!!!quos(input$group_by)) 
         })
+    output$summary_plot <- reactive({
+        datar <- datar() 
+        if (is.null(datar)) {
+            return(datar)
+        }
+        facet_by <- c("Item")
+        color_by <- c("Price Point Name")
+        x_axis <- c("DayOfWeek")
+        groupers <- c(facet_by, color_by, x_axis)
+        for (i in groupers) {
+            datar[str_c(i,"_ranked")] <- order(datar[i][[1]],decreasing=T)
+        }
+        datar %>% arrange_(.,str_c(groupers,"_ranked")) %>% 
+            mutate_at(.,.vars=groupers,factor) %>%
+            group_by_at(.,.vars=groupers) %>%
+            summarize(.,TotalSales=sum(`Gross Sales`),
+                TotalSold=length(`Gross Sales`)) %>%
+            gather(.,Variable,Value,-groupers) %>%
+            ggplot(.) +
+            aes_string(x=x_axis,y=quote(Value),
+                fill=str_c(str_replace(color_by,"(.*)","\\`\\1\\`"),collapse=":"))+
+            geom_bar(stat="identity")+
+            facet_wrap(facets=c("Variable",facet_by),scales="free_y")+
+            guides(fill=F)+
+            NULL
+        })
+
 
 #So to give you some context - currently we use an online sales system (SQUARE) which is our register and sales tracker. They allow us to export our sales data. An example of last week's sales are attached. To start, it might help to focus on LUNCH. Some context about how our lunch menu is organized: it is set-up in a way where you choose (2) things: (1) the type of dish (2) the type of protein
 #
@@ -162,6 +203,13 @@ server <- function(input, output) {
 #  arrange(-SumNetSales)
 #
 #write_tsv(byItemPPByWeekday,path="bbm_byItemPPByWeekday.tsv")
+
+#z %>% group_by(.,DayOfWeek) %>% 
+#    summarize(.,Transactions=list(table(Item)))
+#z %>% ggplot(.) +
+#    aes(x=factor(DayOfWeek),fill=Item) + 
+#    geom_bar(position="stack") +
+#    NULL
 
 }
 
