@@ -1,0 +1,277 @@
+---
+title: "sales report"
+output: 
+    html_document: 
+        toc: true
+        theme: flatly
+params:
+    filepaths: NA
+---
+
+
+```{r,libraries,echo=F,warning=F,message=F,error=F}
+library(tidyverse)
+library(lubridate)
+library(magrittr)
+```
+
+```{r,functions,echo=F}
+dollars_to_numbers <- function(x) as.numeric(sub("\\$","",x))
+
+tz_lookup <- c(`Pacific Time (US & Canada)`="America/Los_Angeles")
+
+parse_square_csv <- function(path) {
+    read_csv(path) %>% 
+        mutate_at(.,
+            .vars=c("Gross Sales","Discounts","Net Sales","Tax"),
+            .funs=dollars_to_numbers) %>%
+        mutate(.,   DateString=str_c(Date,"_",Time)) %>%
+        group_by(., DateString,`Time Zone`) %>%
+        mutate(.,DateTime=parse_date_time(DateString,"m/d/y_h:M:S",
+            tz=tz_lookup[unique(`Time Zone`)])) %>%
+        ungroup(.) %>% 
+        mutate(.,
+            DateTime=with_tz(DateTime,
+                tzone="America/Los_Angeles")
+            ) %>%
+        select(.,-DateString,-Date,-Time,-SKU,-Details) %>%
+        mutate(.,DayOfWeek= wday(DateTime,label=T))%>%
+        mutate(.,DayOfYear= yday(DateTime))%>%
+        mutate(.,Week=      week(DateTime)) %>% 
+        mutate(.,HourOfDay= hour(DateTime)+minute(DateTime)/60+
+            second(DateTime)/60/60) %>% 
+        mutate_at(.,.vars=c("Price Point Name","Item"),.funs=tolower)%>%
+        mutate(.,`Price Point Name`=ifelse(
+                `Price Point Name`%in%c("grill chicken"),
+                "grilled chicken",`Price Point Name`
+                )
+            ) %>%
+        mutate(.,`Price Point Name`=ifelse(
+                `Price Point Name`%in%c("tofu"),
+                "thai basil tofu",`Price Point Name`
+                )
+            ) %>%
+        filter(.,`Net Sales`!=0) %>%
+        mutate(.,`Price Point Name`=ifelse(is.na(`Price Point Name`),
+            "",`Price Point Name`)) %>%
+        arrange(.,DateTime)
+}
+```
+
+<!-- For debugging/testing
+#```{r} params <- list() ; params$filepaths <- c("../copy.csv") ```
+-->
+
+```{r,read_data_in,echo=F,message=F}
+datar <- map(params$filepaths,parse_square_csv) %>%
+    bind_rows() %>% unique()
+```
+
+# Summaries of sales by day
+
+## Categories
+
+```{r,echo=F}
+datar %>% 
+    group_by(.,Category,DayOfWeek) %>%
+    summarize(.,TotalSold=length(`Net Sales`)) %>%
+    spread(.,DayOfWeek,TotalSold) %>%
+    mutate_all(.,str_replace_na,replacement='') %>%
+    DT::datatable(.)
+#    DT::datatable(.)
+```
+
+## Not lunch
+
+```{r,echo=F}
+datar %>% filter(.,Category!="Lunch") %>%
+    group_by(.,Item,DayOfWeek) %>%
+    summarize(.,TotalSold=length(`Net Sales`)) %>%
+    spread(.,DayOfWeek,TotalSold) %>%
+    mutate_all(.,str_replace_na,replacement='') %>%
+    DT::datatable(.)
+```
+
+## Lunch
+
+```{r,echo=F}
+datar %>% filter(.,Category=="Lunch") %>%
+    group_by(.,Item,DayOfWeek) %>%
+    summarize(.,TotalSold=length(`Net Sales`)) %>%
+    spread(.,DayOfWeek,TotalSold) %>%
+    mutate_all(.,str_replace_na,replacement='') %>%
+    DT::datatable(.)
+```
+
+## Price Points in Lunch
+
+```{r,echo=F}
+datar %>% filter(.,Category=="Lunch") %>%
+    group_by(.,`Price Point Name`,DayOfWeek) %>%
+    summarize(.,TotalSold=length(`Net Sales`)) %>%
+    spread(.,DayOfWeek,TotalSold) %>%
+    mutate_all(.,str_replace_na,replacement='') %>%
+    DT::datatable(.)
+```
+
+# Plots of purchases
+
+```{r,echo=F,fig.show='asis',fig.height=12}
+datar %>% 
+    mutate(.,DayOfWeek=factor(as.character(DayOfWeek),
+            levels=(levels(DayOfWeek))),
+        Week=factor(Week)
+        ) %>%
+    group_by(DayOfWeek,Week,Item) %T>% 
+    {print("Purchases by time of day, for all days in each week");
+    print(ggplot(.) + theme_minimal() +
+        aes(x=HourOfDay,y=Item,col=Item,group=HourOfDay) +
+        facet_grid(Category~Week,scales="free_y",space="free_y",switch="y")+
+        geom_point(size=0.5,position=position_jitter(height=0.2))+
+        theme(legend.position="bottom")+
+        NULL)
+    } %T>%
+    {print("Purchases by time of day, for all weeks for each day");
+    print(ggplot(.) + theme_minimal() +
+        aes(x=HourOfDay,y=Item,col=Item,group=HourOfDay) +
+        facet_grid(Category~DayOfWeek,scales="free_y",space="free_y",switch="y")+
+        geom_point(size=0.5,position=position_jitter(height=0.2))+
+        theme(legend.position="bottom")+
+        NULL)
+    } -> tmp
+```
+
+# Lunch item sales
+
+```{r,echo=F,fig.show='asis',fig.height=12}
+datar %>% filter(.,Category=="Lunch") %>%
+    mutate(.,DayOfWeek=factor(as.character(DayOfWeek),
+            levels=(levels(DayOfWeek))),
+        Week=factor(Week)
+        ) %>%
+    group_by(DayOfWeek,Week,Item) %T>% 
+    {print("Purchases by time of day, for all days in each week");
+    print(ggplot(.) + theme_minimal() +
+        aes(x=HourOfDay,y=Item,col=Item) +
+        facet_wrap(~Week,scales="free_x")+
+        geom_point(size=0.5,position=position_jitter(height=0.2))+
+        theme(legend.position="bottom")+
+        NULL)
+    } %T>%
+    {print("Purchases by time of day, for all weeks for each day");
+    print(ggplot(.) + theme_minimal() +
+        aes(x=HourOfDay,y=Item,col=Item) +
+        facet_grid(DayOfWeek~.,scales="free_x")+
+        geom_point(size=0.5,position=position_jitter(height=0.2))+
+        theme(legend.position="bottom")+
+        NULL)
+    } -> tmp
+```
+
+```{r,echo=F,fig.show='asis'}
+tmp %>%
+    summarize(.,TotalSales=sum(`Gross Sales`),
+        TotalSold=length(`Gross Sales`)) %>%
+    gather(.,Variable,Value,TotalSales,TotalSold) %T>%
+    {print("Total sale number and dollars by day of week");
+    print(ggplot(.) + theme_minimal() +
+        aes(x=DayOfWeek,y=Value,fill=Item) +
+        facet_grid(Week~Variable,scales="free_x")+
+        geom_bar(stat="identity")+coord_flip()+
+        theme(legend.position="bottom")+
+        NULL)
+    } %>%
+    {print("Total sale number and dollars by day of week, but scaled to fill proportionally ");
+    print(ggplot(.) + theme_minimal() +
+        aes(x=DayOfWeek,y=Value,fill=Item) +
+        facet_grid(Week~Variable,scales="free_x")+
+        geom_bar(stat="identity",position="fill")+coord_flip()+
+        theme(legend.position="bottom")+
+        NULL)
+    } 
+```
+
+# Protein pick sales
+
+```{r,echo=F,fig.show='asis',fig.height=12}
+datar %>% filter(.,Category=="Lunch") %>%
+    mutate(.,DayOfWeek=factor(as.character(DayOfWeek),
+            levels=(levels(DayOfWeek))),
+        Week=factor(Week)
+        ) %>%
+    group_by(DayOfWeek,Week,`Price Point Name`) %T>%
+    {print("Purchases by time of day, for all days in each week");
+    print(ggplot(.) + theme_minimal() +
+        aes(x=HourOfDay,y=`Price Point Name`,col=`Price Point Name`)+
+        facet_wrap(~Week,scales="free_x")+
+        geom_point(size=0.5,position=position_jitter(height=0.2))+
+        theme(legend.position="bottom")+
+        NULL)
+    } %T>%
+    {print("Purchases by time of day, for all weeks for each day");
+    print(ggplot(.) + theme_minimal() +
+        aes(x=HourOfDay,y=`Price Point Name`,col=`Price Point Name`)+
+        facet_grid(DayOfWeek~.,scales="free_x")+
+        geom_point(size=0.5,position=position_jitter(height=0.2))+
+        theme(legend.position="bottom")+
+        NULL)
+    } -> tmp
+```
+
+```{r,echo=F,fig.show='asis'}
+tmp %>%
+    summarize(.,TotalSales=sum(`Gross Sales`),
+        TotalSold=length(`Gross Sales`)) %>%
+    gather(.,Variable,Value,TotalSales,TotalSold) %T>%
+    {print("Total sale number and dollars by day of week");
+    print(ggplot(.) + theme_minimal() +
+        aes(x=DayOfWeek,y=Value,fill=`Price Point Name`) +
+        facet_grid(Week~Variable,scales="free_x")+
+        geom_bar(stat="identity")+coord_flip()+
+        theme(legend.position="bottom")+
+        NULL)
+    } %>%
+    {print("Total sale number and dollars by day of week, but scaled to fill proportionally ");
+    print(ggplot(.) + theme_minimal() +
+        aes(x=DayOfWeek,y=Value,fill=`Price Point Name`) +
+        facet_grid(Week~Variable,scales="free_x")+
+        geom_bar(stat="identity",position="fill")+coord_flip()+
+        theme(legend.position="bottom")+
+        NULL)
+    } 
+```
+
+
+<!---
+#So to give you some context - currently we use an online sales system (SQUARE) which is our register and sales tracker. They allow us to export our sales data. An example of last week's sales are attached. To start, it might help to focus on LUNCH. Some context about how our lunch menu is organized: it is set-up in a way where you choose (2) things: (1) the type of dish (2) the type of protein
+#
+#        Menu Items (Item)
+#            Bánh Mi
+#            Rice Bowl
+#            Noodle Bowl
+#            Pho Soup
+#            Cold Soba Salad
+#            Papaya Salad
+#            Kale Salad
+#            Peanut Salad
+#            Spring Rolls 
+#        Protein Options (price point name)
+#            Curry Chicken
+#            Grilled Chicken
+#            Coconut-Milk Fried Chicken
+#            Slow cooked Pork
+#            Grilled pork
+#            Thai basil tofu
+#            Chili Garlic Tofu
+#            Roasted Cauliflower 
+#
+#A really straightforward report would help us see how much to prepare in the kitchen each day so we have MINIMUM WASTE. Part of the difficulty in running a cafe is that we want to find a sweet spot where we make enough to maximize sales but minimize waste (extra food). 
+#
+#Specifically, how can we generate a report that would clearly show (2) simple totals:
+#
+#    How much of each protein option we sell each day
+#    How much of each item we sell each day 
+#
+#Let me know what you think. There are currently report tools within Square and through a 3rd party app called DASHBOARD that has been helpful. If you'd like to see these, I can call you to share our login info. 
+-->
+
