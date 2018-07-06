@@ -15,7 +15,7 @@ ui <- fluidPage(
 
         textOutput("files_read",inline=F),
 
-        downloadButton("report", "Generate report"),
+        downloadLink("report", "Generate report"),
 
         NULL)
     )
@@ -32,8 +32,8 @@ server <- function(input, output) {
         })
 
     output$report <- downloadHandler(
-        filename=paste0("report_",
-                gsub("\\s","_",Sys.time()),".html"),
+        filename=reactive({paste0("report_",
+                gsub("\\s","_",Sys.time()),".html")}),
         content = function(filename) {
             temp_report_path <- file.path( tempdir(), "report.Rmd" )
             file.copy( "report.Rmd", temp_report_path, overwrite=T )
