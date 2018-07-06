@@ -37,8 +37,8 @@ server <- function(input, output) {
         content = function(filename) {
             temp_report_path <- file.path( tempdir(), "report.Rmd" )
             file.copy( "report.Rmd", temp_report_path, overwrite=T )
-            params <- list(filepaths=list.files(input$input_csv$name,
-                    full.names=T)
+            params <- list(
+                filepaths=normalizePath(input$input_csv$datapath)
                 )
             rmarkdown::render(temp_report_path,
                 output_file=filename,
